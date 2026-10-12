@@ -3,7 +3,7 @@ app_streamlit.py — Tablero de cartera · Módulo 5 · Tema 1  ·  VERSIÓN PAR
 ================================================================================
 Diplomado Machine Learning en Seguros · FC UNAM
 Se corre local:   streamlit run app_streamlit.py
-Deploy:           Streamlit Community Cloud (ver guía de deploy)
+Deploy:          Streamlit Community Cloud (ver guía de deploy)
 
 Es la MISMA app que construimos en clase. Solo cambia lo que el deploy exige:
   1) Las rutas se anclan a la carpeta del archivo (AQUI) — en el servidor el
@@ -15,7 +15,7 @@ Es la MISMA app que construimos en clase. Solo cambia lo que el deploy exige:
   3) El cotizador muestra los KPIs en orden (1 empírico → 2 GLM → 3 precio).
 """
 
-import os
+import os 
 import sqlite3
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+import gspread
 import warnings; warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Tablero de cartera — Diplomado ML Seguros",
@@ -41,7 +42,7 @@ def ruta_parquet():
     raise FileNotFoundError("No encuentro datos.parquet (ponlo en datos/datos.parquet).")
 
 BANDAS_EDAD = [17, 30, 35, 45, 50, 55, 60, 95]
-BANDINGS = {"edad_conductor":      [17, 30, 35, 45, 50, 55, 60, 95],
+BANDINGS = {"edad_conductor":       [17, 30, 35, 45, 50, 55, 60, 95],
             "antiguedad_vehiculo": [-1, 1, 2, 3, 4, 5, 10, 15, 50],
             "potencia":            [9, 40, 50, 60, 70, 250],
             "nivel_bonus":         [-1, 0, 1, 2, 5, 10, 25]}
@@ -165,6 +166,15 @@ def relatividades(p, m_freq, m_sev):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Conexión a Google Sheets (Punto C.3)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_resource
+def hoja():
+    gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+    return gc.open_by_url(st.secrets["sheet_url"]).sheet1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 4 · Preparar datos + modelos (una sola vez, ANTES de los tabs)
 # ─────────────────────────────────────────────────────────────────────────────
 datos = cargar_datos()
@@ -270,8 +280,24 @@ with tab_cotiza:
               "antiguedad": c3.slider("Antigüedad del vehículo", 0, 40, 5),
               "potencia": c4.slider("Potencia (HP)", 10, 200, 70),
               "bonus": c4.slider("Bonus-malus", 0, 25, 5)}
+    
     if st.button("Cotizar", type="primary"):
         st.session_state["perfil"] = perfil
+        
+        # --- LÓGICA DEL PUNTO C.3 PARA GUARDAR EN GOOGLE SHEETS ---
+        try:
+            _, _, pp_glm_temp, _ = cotizar_glm(perfil, m_freq, m_sev, m_agg)
+            tarifa_temp = pp_glm_temp / (1 - gastos - margen)
+            
+            hoja().append_row([
+                pd.Timestamp.now().isoformat(),
+                perfil["edad_conductor"], perfil["cobertura"], perfil["sexo"],
+                perfil["uso"], perfil["combustible"], perfil["antiguedad"],
+                perfil["potencia"], perfil["bonus"], round(pp_glm_temp, 2), round(tarifa_temp, 2)
+            ])
+            st.success("Cotización guardada ✔")
+        except Exception as e:
+            st.error(f"Error al guardar en Google Sheets: {e}")
 
     if "perfil" in st.session_state:
         p = st.session_state["perfil"]
@@ -318,3 +344,15 @@ with tab_cotiza:
         st.pyplot(fig3)
         st.caption(f"Prima base (perfil de referencia): ${pp_ref:,.2f} → tu prima pura: ${pp_glm:,.2f}. "
                    "Rojo = pagas más · verde = pagas menos.")
+
+        # ---- Ver lo guardado en Google Sheets (Opcional C.3) ----
+        st.divider()
+        st.markdown("#### Historial reciente en Google Sheets")
+        try:
+            registros = hoja().get_all_records()
+            if registros:
+                st.dataframe(pd.DataFrame(registros).tail(10), use_container_width=True)
+            else:
+                st.info("La hoja de cálculo aún está vacía.")
+        except Exception as e:
+            st.info("Realiza tu primera cotización para ver el historial sincronizado.")
